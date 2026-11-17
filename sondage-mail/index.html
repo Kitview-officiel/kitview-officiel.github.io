@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="robots" content="noindex, nofollow">
+<title>Sondage</title>
+<style>
+  :root{color-scheme:light;--c:#1a73e8;--on:#fff;--ink:#1d1d1b;--muted:#6b6a66;--line:#e4e2dc}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#f6f5f2;color:var(--ink)}
+  body{font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:48px 16px}
+  .card{width:100%;max-width:460px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:26px 24px 20px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  h1{font-size:19px;margin:0 0 4px;line-height:1.3}
+  .hint{color:var(--muted);font-size:14px;margin:0 0 18px}
+  .opt{margin-bottom:12px}
+  .row{display:flex;align-items:center;gap:12px}
+  button.choice{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:10px 16px;border:2px solid var(--c);border-radius:9px;background:#fff;color:var(--ct,var(--c));-webkit-text-fill-color:currentColor;font:inherit;font-weight:700;cursor:pointer;transition:background .15s,color .15s}
+  button.choice:hover{background:color-mix(in srgb,var(--c) 8%,#fff)}
+  button.choice.sel{background:var(--c);color:var(--on)}
+  button.choice:disabled{cursor:default}
+  button.choice:focus-visible{outline:3px solid color-mix(in srgb,var(--c) 45%,transparent);outline-offset:2px}
+  .check{display:none}
+  .sel .check{display:inline}
+  .pct{width:52px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .bar{height:6px;background:#eeece7;border-radius:3px;margin-top:6px;margin-right:64px;overflow:hidden}
+  .bar i{display:block;height:100%;width:0;background:var(--c);border-radius:3px;transition:width .5s ease}
+  .foot{display:flex;justify-content:space-between;gap:12px;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+  .ok{color:#1e7a35;font-weight:600}
+  .err{color:#b3261e;font-weight:600}
+  .hide-res .pct,.hide-res .bar{visibility:hidden}
+</style>
+</head>
+<body>
+<main class="card" id="card">
+  <h1 id="title">Sondage</h1>
+  <p class="hint" id="hint"></p>
+  <div id="list"></div>
+  <div class="foot"><span id="status"></span><span id="count"></span></div>
+</main>
+
+<script>
+const API = "https://awiretvajhgbuqivuhyx.supabase.co/functions/v1/sondage";
+const q = new URLSearchParams(location.search);
+const poll = (q.get("p")||"").slice(0,40);
+const mode = q.get("m")==="u" ? "u" : "m";
+const labels = q.getAll("x").slice(0,20);
+const viewOnly = q.get("r")==="1";
+const first = q.has("o") ? Number(q.get("o")) : null;
+const $ = s => document.querySelector(s);
+
+// Couleur choisie + couleur de texte la plus lisible (règle de contraste WCAG)
+function lum(hex){
+  const v=[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(c=>c<=.03928?c/12.92:((c+.055)/1.055)**2.4);
+  return .2126*v[0]+.7152*v[1]+.0722*v[2];
+}
+let c=(q.get("c")||"1a73e8").replace(/[^0-9a-f]/gi,"");
+if(c.length!==6) c="1a73e8";
+const L=lum(c), cw=(1.05)/(L+.05), cd=(L+.05)/(lum("1d1d1b")+.05);
+document.documentElement.style.setProperty("--c","#"+c);
+document.documentElement.style.setProperty("--on", cw>=cd ? "#ffffff" : "#1d1d1b");
+// Texte des boutons non choisis : on assombrit la couleur jusqu'à un contraste ≥ 4,5:1 sur blanc
+function darken(hex){
+  let rgb=[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16));
+  for(let k=0;k<20 && 1.05/(lum(rgb.map(x=>x.toString(16).padStart(2,"0")).join(""))+.05)<4.5;k++) rgb=rgb.map(x=>Math.round(x*.9));
+  return "#"+rgb.map(x=>x.toString(16).padStart(2,"0")).join("");
+}
+document.documentElement.style.setProperty("--ct", darken(c));
+
+function voterId(){
+  const make=()=> (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())+Math.random().toString(36).slice(2));
+  try{ let v=localStorage.getItem("sv_voter"); if(!v){ v=make(); localStorage.setItem("sv_voter",v);} return v; }
+  catch{ return window.__v || (window.__v=make()); }
+}
+const voter = voterId();
+
+let mine = new Set(first!==null && !viewOnly ? [first] : []);
+let data = {voters:0,counts:{}};
+
+function render(){
+  const total = data.voters;
+  $("#list").innerHTML = labels.map((l,i)=>{
+    const n = data.counts[i]||0, pct = total ? Math.round(n/total*100) : 0, sel = mine.has(i);
+    return `<div class="opt"><div class="row">
+      <button class="choice${sel?" sel":""}" data-i="${i}" aria-pressed="${sel}" ${viewOnly?"disabled":""}><span class="check">✓</span><span></span></button>
+      <span class="pct">${pct} %</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join("");
+  document.querySelectorAll("button.choice").forEach((b,i)=>{
+    b.querySelector("span:last-child").textContent = labels[i];
+    b.addEventListener("click", ()=>toggle(i));
+  });
+  $("#count").textContent = total + (total>1 ? " participants" : " participant");
+}
+
+async function call(params){
+  const u = new URL(API);
+  Object.entries({p:poll, v:voter, m:mode, ...params}).forEach(([k,v])=>u.searchParams.set(k,v));
+  const r = await fetch(u, {cache:"no-store"});
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+function apply(res){
+  data = {voters:res.voters, counts:res.counts||{}};
+  mine = new Set(viewOnly ? [] : (res.mine||[]));
+  render();
+}
+function status(msg, cls=""){ const s=$("#status"); s.textContent=msg; s.className=cls; }
+
+async function toggle(i){
+  if(viewOnly) return;
+  const on = !mine.has(i);
+  if(mode==="u" && on) mine = new Set([i]); else on ? mine.add(i) : mine.delete(i);
+  render(); status("Enregistrement…");
+  try{ apply(await call({api:"vote", o:i, l:labels[i], on:on?1:0})); status("Réponse enregistrée ✓","ok"); }
+  catch{ status("Échec, réessayez.","err"); }
+}
+
+(async function init(){
+  if(!poll || !labels.length){ $("#title").textContent="Lien de sondage invalide"; $("#list").innerHTML=""; return; }
+  const t = q.get("t") || "Sondage";
+  $("#title").textContent = t; document.title = t;
+  $("#hint").textContent = viewOnly ? "Résultats en direct"
+    : mode==="m" ? "Cliquez sur chaque créneau qui vous convient. Recliquez pour retirer."
+    : "Cliquez sur votre choix. Un autre clic le remplace.";
+  render();
+  try{
+    if(!viewOnly && first!==null && labels[first]!==undefined){
+      status("Enregistrement…");
+      apply(await call({api:"vote", o:first, l:labels[first], on:1}));
+      status("Réponse enregistrée ✓","ok");
+      // Retire le choix de l'adresse : recharger la page ne revote pas
+      q.delete("o"); history.replaceState(null,"","?"+q.toString());
+    } else {
+      apply(await call({api:"state"}));
+      status(viewOnly ? "Mis à jour à "+new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}) : "");
+    }
+  }catch{ status("Connexion impossible, réessayez.","err"); }
+  if(viewOnly) setInterval(async()=>{ try{ apply(await call({api:"state"})); status("Mis à jour à "+new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})); }catch{} }, 15000);
+})();
+</script>
+</body>
+</html>
